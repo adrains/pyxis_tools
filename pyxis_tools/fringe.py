@@ -1,5 +1,6 @@
 """
-
+Functions for extracting fringes and phases from multi-wavelength 
+interferometer data with two laser diodes.
 
 lambda_1, lambda_2  --> wavelengths for laser 1 and 2
 Lambda_1_2          --> synthetic wavelength from wavelengths 1 and 2
@@ -26,15 +27,25 @@ from matplotlib.colors import LogNorm, PowerNorm
 # Constants
 #------------------------------------------------------------------------------
 # Camera
+# ------
 PIXEL_SCALE = 3.45  # um/px
 DETECTOR_SHAPE = (1080, 1440)
 
 # Laser sources
-LAMBDA_1 = 0.780      # um
-LAMBDA_2 = 0.830      # um
-LAMBDA_1_2 = LAMBDA_1 * LAMBDA_2 / (LAMBDA_2 - LAMBDA_1)
+# -------------
+# 1) LPS-PM785-FC (pigtail) with diode: DL4140-001S (superceded by: L785P25)
+# https://www.thorlabs.com/thorproduct.cfm?partnumber=LPS-PM785-FC
+LAMBDA_1 = 785          # nm
+MODE_SPACING_1 = 0.3    # nm
 
-# Grating
+# 2) LPS-PM830-FC
+# https://www.thorlabs.com/thorproduct.cfm?partnumber=LPS-PM830-FC
+LAMBDA_2 = 830          # nm
+MODE_SPACING_2 = 0.25   # nm
+
+#LAMBDA_1_2 = LAMBDA_1 * LAMBDA_2 / (LAMBDA_2 - LAMBDA_1)
+
+# Grating (Thorlabs GE2550-0863 Echelle Grating, 79.0 Grooves/mm, 63° Blaze)
 GRATING_LINE_SEPARATION = 12.7  # um
 GRATING_BETA_785nm = -56.04     # degrees
 GRATING_BETA_830nm = -55.68     # degrees
@@ -52,7 +63,9 @@ def extract_wavelength_dimension(
     image_plot_x_bounds=(460,590),
     image_plot_y_bounds=(220,500),):
     """Extracts the _wavelength_ dimension of the camera image - e.g. this will
-    display the discrete modes of the laser diodes.
+    display the discrete modes of the laser diodes. 
+    
+    NOTE: Not useful for fringe or phase extraction.
 
     Currently relies on manually defining a reference point in the spatial and
     wavelength dimensions to start the extraction from, as well as whatever
@@ -149,7 +162,8 @@ def extract_fringes_from_image(
     lambda_lims=(625, 825),
     lambda_width=6,
     lambda_sep=10,
-    rotation_angle=0,):
+    rotation_angle=0,
+    do_plot_laser_modes=False,):
     """Function to extract a series of fringes from a detector image. 
 
     Currently relies on manually defining a reference point in the spatial and
@@ -223,15 +237,23 @@ def extract_fringes_from_image(
 
     # Intialise plots
     plt.close("all")
-    fig, (ax_image, ax_fringe) = plt.subplots(2,1)
+
+    if do_plot_laser_modes:
+        fig, (ax_image, ax_laser_modes, ax_fringe) = plt.subplots(3,1)
+    else:
+        fig, (ax_image, ax_fringe) = plt.subplots(2,1)
 
     # Dark/bias correct before moving on
     fringe_image_dc = fringe_image - dark_image
 
     # Now rotate the image if required
     if rotation_angle != 0:
-        fringe_image_dc = rotate(fringe_image_dc, angle=rotation_angle, reshape=False)
+        fringe_image_dc = rotate(
+            fringe_image_dc,
+            angle=rotation_angle,
+            reshape=False)
 
+    # Plot the image
     img = ax_image.imshow(
         fringe_image_dc,
         aspect="equal",
@@ -239,6 +261,11 @@ def extract_fringes_from_image(
         norm=PowerNorm(gamma=0.5))
     cb = fig.colorbar(img, ax=ax_image)
     cb.set_label("Counts")
+
+    if do_plot_laser_modes:
+        ax_laser_modes.plot(
+            np.sum(fringe_image_dc, axis=0),
+            linewidth=0.5,)
 
     # Hatch in the first section
     rect = patches.Rectangle(
@@ -348,9 +375,17 @@ def extract_fringes_from_image(
     return fringes
 
 
-def extract_fringe_phase(fringes, skip_missing_fringes=False, skip_threshold=10):
+def extract_fringe_phase(
+    fringes,
+    skip_missing_fringes=False,
+    skip_threshold=10,
+    spatial_x0=570,
+    x_width=50,):
     """Fourier transform each fringe to extract fringe phase. Plots fringe
     magnitude and phase.
+
+    NOTE: This this function is not yet complete. Please see pseudocode in 
+    comments.
 
     Parameters
     ----------
@@ -362,6 +397,12 @@ def extract_fringe_phase(fringes, skip_missing_fringes=False, skip_threshold=10)
 
     skip_threshold: int, default:10
         Threshold signal level associated with skip_missing_fringes.
+
+    spatial_x0: int, default:570
+        Reference plane for spatial (fringe) axis.
+
+    x_width: int, default:50
+        Width of fringe to extract in pixels.
     """
     # Initialise plot
     plt.close("all")
@@ -377,18 +418,39 @@ def extract_fringe_phase(fringes, skip_missing_fringes=False, skip_threshold=10)
             continue
         
         # Do Fourier Transform and extract fringe magnitude and phase
-        out = np.fft.fft(fringes[fringe_i])
-        mag = np.sqrt(out.real**2 + out.imag**2)
-        phase = np.arctan(out.imag / out.real)
+        # fringe_truc = fringe_i[ref_pix-16:ref_pix+16]
+        # out = np.fft.rfft(fringe_trunc)
+
+        # Only analyse the fringe itself
+        fringe_trunc = fringes[fringe_i][spatial_x0-x_width:spatial_x0+x_width]
+
+        # Do Fourier Transform (1D FFT on real data)
+        fft_out = np.fft.rfft(fringe_trunc)
+
+        # What is this constant??? This is the location we want to measure the 
+        # phase at - it will be a float, so we have to find the two adjacent 
+        # pixels and interpolate between them
+        # 17/12/21: Mike said constant comes from peak spacing in Fourier domain
+        # ft_pix = CONST/wavelenvth
+
+        # Interpolate between pixels to get the phase
+        # ft_pix_int = int(ft_pix)
+        # ft_pix_frac = ft_pix = ft_pix_int
+        # interp_ft_pix = out[ft_pix_int]*(1-ft_pix_frac) + out[ft_pix_int+1]*ft_pix_frac
+        # phase_we_care_about = np.angle(interp_ft_pix)
+
+        #out = np.fft.fft(fringes[fringe_i])
+        mag = np.sqrt(fft_out.real**2 + fft_out.imag**2)
+        phase = np.arctan2(fft_out.imag, fft_out.real)
         
         # Plot magnitude and phase
         ax_mag.plot(
-            np.fft.fftshift(mag),
+            mag, #np.fft.fftshift(mag),
             label="Fringe {}".format(fringe_i),
             linewidth=0.5,
             color=colours[fringe_i],)
         ax_phase.plot(
-            np.fft.fftshift(phase),
+            phase, #np.fft.fftshift(phase),
             label="Fringe {}".format(fringe_i),
             linewidth=0.5,
             color=colours[fringe_i],)

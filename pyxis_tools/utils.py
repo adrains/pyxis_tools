@@ -35,6 +35,19 @@ def create_master_dark(path, dark_fn_with_wildcard):
     return median_dark
 
 
+def stack_frames(path, fn_with_wildcard):
+    """Create stacked image from N images.
+    """
+    filepath_base = os.path.join(path, fn_with_wildcard)
+    image_filepaths = glob.glob(filepath_base)
+
+    images = np.array([read_raw8(fp).astype(float) for fp in image_filepaths])
+
+    stacked_image = np.sum(images, axis=0)
+
+    return stacked_image
+
+
 #Some test code to show the data.
 
 if __name__=="__main__":
